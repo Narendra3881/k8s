@@ -1,0 +1,241 @@
+How to Deploy a Multi-Tier Web Application with Kubernetes
+
+Deploying a Multi-Tier Web Application on Kubernetes with Nginx, App Server, and RDS
+
+This guide will walk you through setting up a multi-tier web application on Kubernetes, where:
+
+✅ Nginx acts as the Web Tier (Frontend & Reverse Proxy)
+✅ App Server (Sample Node.js, Flask, or Spring Boot app) is the Application Tier
+✅ Amazon RDS (MySQL/PostgreSQL) is the Database Tier
+✅ All components run in private subnets, accessing the internet via NAT
+✅ ConfigMap and Secrets are used for environment variables
+✅ Separate namespaces per customer
+
+🌟 High-Level Architecture
+
+ 
+
+
+
+             Internet
+                 |
+      ┌──────────────┐
+      │  NAT Gateway │   (Outbound internet access)
+      └──────┬───────┘
+             │
+┌───────────────────────────────┐
+│  Private Kubernetes Cluster   │
+│────────────────────────────── │
+│ Namespace: customer1          │
+│  ┌──────────────┐             │
+│  │  Nginx       │   Web Tier  │
+│  └──────┬───────┘             │
+│         │                      │
+│  ┌──────▼───────┐              │
+│  │ App Server   │  App Tier    │
+│  └──────┬───────┘              │
+│         │                      │
+│  ┌──────▼───────┐              │
+│  │   RDS (AWS)  │  DB Tier     │
+│  └──────────────┘              │
+└───────────────────────────────┘
+🚀 Step-by-Step Deployment Guide
+
+1️⃣ Create Kubernetes Namespace
+
+Each customer gets a dedicated namespace.
+
+
+
+kubectl create namespace customer1 
+2️⃣ Create ConfigMap for Application Configs
+
+Stores non-sensitive environment variables.
+
+
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+  namespace: customer1
+data:
+  DATABASE_HOST: "customer1-db.c9b7a3w1.us-east-1.rds.amazonaws.com"
+  DATABASE_PORT: "3306"
+Apply it:
+
+
+
+kubectl apply -f app-configmap.yaml 
+3️⃣ Create Secrets for Sensitive Data
+
+Stores sensitive credentials (e.g., DB username/password).
+
+
+
+apiVersion: v1
+kind: Secret
+metadata:
+  name: db-secrets
+  namespace: customer1
+type: Opaque
+data:
+  DB_USER: "dXNlcm5hbWU="  # Base64 encoded username
+  DB_PASSWORD: "cGFzc3dvcmQ="  # Base64 encoded password
+Apply it:
+
+
+
+kubectl apply -f db-secrets.yaml 
+4️⃣ Deploy Nginx as the Web Tier
+
+Nginx Deployment
+
+
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx
+  namespace: customer1
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: nginx
+  template:
+    metadata:
+      labels:
+        app: nginx
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:latest
+        ports:
+        - containerPort: 80
+Nginx Service
+
+
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-service
+  namespace: customer1
+spec:
+  selector:
+    app: nginx
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 80
+  type: ClusterIP
+Apply it:
+
+
+
+kubectl apply -f nginx-deployment.yaml kubectl apply -f nginx-service.yaml 
+5️⃣ Deploy Application Server
+
+Application Deployment
+
+
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: appserver
+  namespace: customer1
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: appserver
+  template:
+    metadata:
+      labels:
+        app: appserver
+    spec:
+      containers:
+      - name: appserver
+        image: myregistry.com/appserver:latest
+        ports:
+        - containerPort: 5000
+        env:
+        - name: DB_HOST
+          valueFrom:
+            configMapKeyRef:
+              name: app-config
+              key: DATABASE_HOST
+        - name: DB_PORT
+          valueFrom:
+            configMapKeyRef:
+              name: app-config
+              key: DATABASE_PORT
+        - name: DB_USER
+          valueFrom:
+            secretKeyRef:
+              name: db-secrets
+              key: DB_USER
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: db-secrets
+              key: DB_PASSWORD
+ 
+
+Application Service
+
+
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: appserver-service
+  namespace: customer1
+spec:
+  selector:
+    app: appserver
+  ports:
+    - protocol: TCP
+      port: 5000
+      targetPort: 5000
+  type: ClusterIP 
+Apply it:
+
+
+
+kubectl apply -f appserver-deployment.yaml kubectl apply -f appserver-service.yaml 
+6️⃣ Deploy Amazon RDS
+
+Create Amazon RDS (MySQL/PostgreSQL) instance in private subnet.
+
+Ensure Security Group allows Kubernetes appserver IPs.
+
+Store RDS hostname in ConfigMap.
+
+7️⃣ Use NAT Gateway for Outbound Traffic
+
+Attach NAT Gateway to the private subnet.
+
+Ensure nodes in private subnet can access the internet via NAT for pulling container images, updates, etc..
+
+8️⃣ Verify Deployment
+
+Check running services:
+
+
+
+kubectl get pods -n customer1 kubectl get services -n customer1 
+Test Nginx → Appserver → RDS flow:
+
+
+
+curl http://nginx-service.customer1.svc.cluster.local 
+🚀 Key Takeaways
+
+✔ Namespace isolation for customers
+✔ ConfigMap & Secrets for environment variables
+✔ Kubernetes Services (ClusterIP) for internal communication
+✔ Private subnet with NAT for outbound internet
+✔ RDS hosted in private subnet
