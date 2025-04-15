@@ -1,0 +1,732 @@
+Helm-Based Deployment for Multi-Tier Kubernetes Application
+
+
+Kubernetes Cluster 
+
+Namespace: customer1 (Isolated environment per customer)
+
+Helm Chart: Deploys all resources
+
+Ingress Controller: Manages incoming traffic
+
+Nginx Service: Exposes the web application
+
+App Server: Communicates with the database
+
+ConfigMap & External Secrets: Securely provide application configurations and credentials
+
+AWS Secrets Manager: Securely stores and retrieves database credentials
+
+Amazon RDS: Managed database service for persistent data storage
+
+AWS NAT Gateway: Ensures secure outbound internet access for pulling external updates
+
+1️⃣ Kubernetes Master Node Responsibilities:
+
+Controls the cluster
+
+Runs components like API Server, Controller Manager, Scheduler, and etcd
+
+Does not run application workloads
+
+2️⃣ Worker Nodes Responsibilities:
+
+Runs actual application workloads
+
+Executes Pods, Deployments, Services, and Ingress controllers
+
+Uses Kubelet to communicate with the master node
+
+3️⃣ Helm Deployments:
+
+When you run helm install, Helm interacts with the Kubernetes API Server (on the master node)
+
+The Kubernetes Scheduler schedules the Pods onto worker nodes
+
+Your multi-tier app (Nginx, App Server, Database, etc.) will run on worker nodes
+
+ 
+
+Open K8S-Cluster-Deployment-Diagram.png
+K8S-Cluster-Deployment-Diagram.png
+Open k8sarch.webp
+k8sarch.webp
+Kubernetes Cluster: Required Ports Between Components
+
+To ensure seamless communication between Kubernetes Master and Worker Nodes, as well as additional components like ETCD, kube-proxy, and CNI plugins, you need to open specific ports.
+
+1️⃣ Master Node Ports
+
+Port
+
+Protocol
+
+Component
+
+Purpose
+
+6443
+
+TCP
+
+kube-apiserver
+
+Accepts connections from kubectl, worker nodes, and controllers
+
+2379-2380
+
+TCP
+
+etcd
+
+Stores cluster state & handles API server communication
+
+10250
+
+TCP
+
+kubelet
+
+Allows API Server to communicate with the Master’s kubelet
+
+10251
+
+TCP
+
+kube-scheduler
+
+Handles pod scheduling
+
+10252
+
+TCP
+
+kube-controller-manager
+
+Manages node controllers, replication controllers, etc.
+
+179
+
+TCP
+
+Calico BGP (If using Calico CNI)
+
+Used for BGP peering between nodes
+
+2️⃣ Worker Node Ports
+
+Port
+
+Protocol
+
+Component
+
+Purpose
+
+10250
+
+TCP
+
+kubelet
+
+Receives instructions from API Server
+
+30000-32767
+
+TCP
+
+NodePort Services
+
+Used for exposing services to external traffic
+
+6783-6784
+
+TCP/UDP
+
+Weave Net (CNI)
+
+(If using Weave for pod networking)
+
+8285, 8286
+
+UDP
+
+Flannel (CNI)
+
+(If using Flannel for pod networking)
+
+179
+
+TCP
+
+Calico BGP
+
+(If using Calico for network routing)
+
+3️⃣ Required Ports Between Master & Workers
+
+Source
+
+Destination
+
+Ports
+
+Protocol
+
+Purpose
+
+Worker Nodes
+
+Master Node
+
+6443
+
+TCP
+
+Kubelet → API Server
+
+Master Node
+
+Worker Nodes
+
+10250
+
+TCP
+
+API Server → Kubelet
+
+Master Node
+
+Worker Nodes
+
+30000-32767
+
+TCP
+
+NodePort Services
+
+All Nodes
+
+All Nodes
+
+Flannel/Calico Ports
+
+TCP/UDP
+
+CNI networking
+
+4️⃣ Ports for External Access (Optional)
+
+Port
+
+Protocol
+
+Component
+
+Purpose
+
+80, 443
+
+TCP
+
+Ingress Controller
+
+Expose services via Load Balancer (e.g., ALB)
+
+9090
+
+TCP
+
+Prometheus
+
+Metrics collection
+
+3000
+
+TCP
+
+Grafana
+
+Dashboard access
+
+✔ Master Node → API Server (6443), etcd (2379), kubelet (10250)
+✔ Worker Nodes → Kubelet (10250), NodePort (30000-32767)
+✔ CNI Networking → Flannel/Calico specific ports
+✔ External Access → Ingress Controller (80/443), Monitoring Tools (9090/3000)
+
+Ensure customer specific namespace has already been created
+
+ $ kubectl create namespace <namespace>
+
+
+
+$  kubectl create namespace irctc-preprod
+
+namespace/irctc-preprod created
+
+1️⃣ Helm Chart Setup
+
+Helm Chart Directory Structure
+
+
+
+multi-tier-app/
+├── charts/
+│   └── external-secrets/
+├── templates/
+│   ├── namespace.yaml
+│   ├── configmap.yaml 
+│   ├── deployment-web.yaml
+│   ├── deployment-app.yaml
+│   ├── external-secret.yaml
+│   ├── hpa.yaml
+│   ├── ingress.yaml
+│   ├── rbac.yaml
+│   ├── service-app.yaml
+│   └── service-web.yaml
+├── Chart.yaml
+├── requirements.yaml
+└── values.yaml
+Steps to create the structure:
+
+Create directory structure:
+
+
+
+mkdir -p multi-tier-app/charts/external-secrets
+mkdir -p multi-tier-app/templates
+Create Chart.yaml:
+
+
+
+cat > multi-tier-app/Chart.yaml << 'EOF'
+apiVersion: v2
+name: multi-tier-app
+description: A Helm chart for deploying a multi-tier application with external secrets
+version: 0.1.0
+type: application
+EOF
+Create requirements.yaml:
+
+
+
+cat > multi-tier-app/requirements.yaml << 'EOF'
+dependencies:
+  - name: external-secrets
+    version: 0.9.0
+    repository: https://charts.external-secrets.io
+EOF
+Create values.yaml:
+
+
+
+cat > multi-tier-app/values.yaml << 'EOF'
+# Nginx configurations
+nginx:
+  image: nginx:1.21
+  replicas: 2
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+  config:
+    worker_processes: auto
+    worker_connections: 1024
+# App configurations  
+app:
+  image: your-app-image:latest
+  replicas: 3
+  resources:
+    requests:
+      cpu: 200m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+# AWS configurations
+aws:
+  region: us-west-2
+  secretsManager:
+    secretName: prod/myapp/db-creds
+# RDS configurations  
+rds:
+  host: myapp-db.xxxxx.region.rds.amazonaws.com
+  port: 3306
+  database: myapp
+# Ingress configurations
+ingress:
+  host: myapp.example.com
+  tlsSecretName: myapp-tls
+EOF
+Create template files:
+
+namespace.yaml:
+
+
+
+cat > multi-tier-app/templates/namespace.yaml << 'EOF'
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .Release.Namespace }}
+EOF
+b. configmap.yaml:
+
+
+
+cat > multi-tier-app/templates/configmap.yaml << 'EOF'
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nginx-config
+data:
+  nginx.conf: |
+    worker_processes {{ .Values.nginx.config.worker_processes }};
+    events {
+      worker_connections {{ .Values.nginx.config.worker_connections }};
+    }
+    http {
+      upstream backend {
+        server {{ .Release.Name }}-app:8080;
+      }
+      server {
+        listen 80;
+        location / {
+          proxy_pass http://backend;
+        }
+      }
+    }
+EOF
+c. deployment-web.yaml: 
+
+
+
+cat > multi-tier-app/templates/deployment-web.yaml << 'EOF'
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-web
+spec:
+  replicas: {{ .Values.nginx.replicas }}
+  selector:
+    matchLabels:
+      app: {{ .Release.Name }}-web
+  template:
+    metadata:
+      labels:
+        app: {{ .Release.Name }}-web
+    spec:
+      containers:
+      - name: nginx
+        image: {{ .Values.nginx.image }}
+        resources:
+{{ toYaml .Values.nginx.resources | indent 10 }}
+        volumeMounts:
+        - name: nginx-config
+          mountPath: /etc/nginx/nginx.conf
+          subPath: nginx.conf
+      volumes:
+      - name: nginx-config
+        configMap:
+          name: nginx-config
+EOF
+d.deployment-app.yaml:
+
+
+
+cat > multi-tier-app/templates/deployment-app.yaml << 'EOF'
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-app
+spec:
+  replicas: {{ .Values.app.replicas }}
+  selector:
+    matchLabels:
+      app: {{ .Release.Name }}-app
+  template:
+    metadata:
+      labels:
+        app: {{ .Release.Name }}-app
+    spec:
+      containers:
+      - name: app
+        image: {{ .Values.app.image }}
+        resources:
+{{ toYaml .Values.app.resources | indent 10 }}
+        env:
+        - name: DB_HOST
+          value: {{ .Values.rds.host }}
+        - name: DB_PORT
+          value: "{{ .Values.rds.port }}"
+        - name: DB_NAME
+          value: {{ .Values.rds.database }}
+        envFrom:
+        - secretRef:
+            name: db-credentials
+EOF
+e. external-secret.yaml:
+
+
+
+cat > multi-tier-app/templates/external-secret.yaml << 'EOF'
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: db-credentials
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: aws-secrets-manager
+    kind: SecretStore
+  target:
+    name: db-credentials
+  data:
+secretKey: username
+remoteRef:
+  key: {{ .Values.aws.secretsManager.secretName }}
+  property: username
+secretKey: password
+remoteRef:
+  key: {{ .Values.aws.secretsManager.secretName }}
+  property: password
+EOF
+f. hpa.yaml:
+
+
+
+cat > multi-tier-app/templates/hpa.yaml << 'EOF'
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ .Release.Name }}-web
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ .Release.Name }}-web
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 80
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ .Release.Name }}-app
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ .Release.Name }}-app
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 80
+EOF
+g. ingress.yaml:
+
+
+
+cat > multi-tier-app/templates/ingress.yaml << 'EOF'
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ .Release.Name }}
+  annotations:
+    kubernetes.io/ingress.class: alb
+spec:
+  tls:
+  - hosts:
+    - {{ .Values.ingress.host }}
+    secretName: {{ .Values.ingress.tlsSecretName }}
+  rules:
+  - host: {{ .Values.ingress.host }}
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: {{ .Release.Name }}-web
+            port:
+              number: 80
+EOF
+h. rbac.yaml:
+
+
+
+cat > multi-tier-app/templates/rbac.yaml << 'EOF'
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: external-secrets-role
+rules:
+- apiGroups: ["external-secrets.io"]
+  resources: ["*"]
+  verbs: ["*"]
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: external-secrets-rolebinding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: external-secrets-role
+subjects:
+- kind: ServiceAccount
+  name: external-secrets
+  namespace: {{ .Release.Namespace }}
+EOF
+i. service-app.yaml:
+
+
+
+cat > multi-tier-app/templates/service-app.yaml << 'EOF'
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-app
+spec:
+  selector:
+    app: {{ .Release.Name }}-app
+  ports:
+  - port: 8080
+    targetPort: 8080
+EOF
+j. service-web.yaml:
+
+
+
+cat > multi-tier-app/templates/service-web.yaml << 'EOF'
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-web
+spec:
+  selector:
+    app: {{ .Release.Name }}-web
+  ports:
+  - port: 80
+    targetPort: 80
+EOF
+6️⃣ Deploy the Helm Chart
+
+Deploy Using AWS Secrets Manager
+
+Install External Secrets Operator using Helm
+
+
+
+Step 1. $ helm repo add external-secrets https://charts.external-secrets.io
+"external-secrets" has been added to your repositories
+Step 2. $ helm repo update
+Hang tight while we grab the latest from your chart repositories...
+...Successfully got an update from the "external-secrets" chart repository
+Update Complete. ⎈Happy Helming!⎈
+Step 3. $ helm install external-secrets external-secrets/external-secrets --namespace kube-system
+NAME: external-secrets
+LAST DEPLOYED: Fri Feb 21 11:27:34 2025
+NAMESPACE: kube-system
+STATUS: deployed
+REVISION: 1
+TEST SUITE: None
+NOTES:
+external-secrets has been deployed successfully in namespace kube-system!
+In order to begin using ExternalSecrets, you will need to set up a SecretStore
+or ClusterSecretStore resource (for example, by creating a 'vault' SecretStore).
+More information on the different types of SecretStores and how to configure them
+can be found in our Github: https://github.com/external-secrets/external-secrets
+Check if External Secrets Operator is Running
+
+Run the following command to check if the operator is deployed and running:
+
+
+
+$ kubectl get pods -n kube-system | grep external-secrets
+external-secrets-76cb589647-mjgxb                   1/1     Running   1 (29s ago)   69s
+external-secrets-cert-controller-79cb9bb4f4-fflp6   0/1     Running   1 (30s ago)   69s
+external-secrets-webhook-6b4b586847-kxn9k           0/1     Running   0             69s
+Check AWS Secret Store Configuration
+
+List the SecretStore or ClusterSecretStore resources:
+
+
+
+kubectl get secretstore -A OR kubectl get clustersecretstore -A
+Deploy the Helm chart:
+
+
+
+helm install multi-tier-app ./multi-tier-app --namespace=customer1 
+7️⃣ Verify Deployment
+
+Check if all resources are running:
+
+
+
+kubectl get all -n customer1 
+Check logs:
+
+
+
+kubectl logs -l app=appserver -n customer1 
+Test Nginx connection:
+
+
+
+curl http://nginx-service.customer1.svc.cluster.local 
+8️⃣ Upgrade or Uninstall
+
+If you make changes to values.yaml, upgrade the deployment:
+
+
+
+helm upgrade multi-tier-app ./multi-tier-app 
+To uninstall:
+
+
+
+helm uninstall multi-tier-app 
+🎯 Summary
+
+✔ Used Helm to package a multi-tier Kubernetes app
+✔ Configured Nginx, App Server, and RDS
+✔ Isolated customers using namespaces
+✔ Secured secrets via AWS Secrets Manager using External Secrets Operator
+✔ Enabled NAT Gateway for outbound traffic
+
+🎯 Secure Secret Management
+
+Approach
+
+Security Level
+
+Best For
+
+Helm --set
+
+🔹 Medium
+
+Passing secrets at runtime
+
+External Secrets (AWS Secrets Manager)
+
+🔥 High
+
+Enterprise-grade secret management
+
+This setup ensures a scalable, secure, and automated Kubernetes deployment for a multi-tier application, leveraging AWS Secrets Manager for secure credential management. 🚀
+
